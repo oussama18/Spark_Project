@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>spark.batch</groupId>
-    <artifactId>wordCount</artifactId>
+    <artifactId>Projet_SPARK</artifactId>
     <version>1</version>
 
     <properties>
@@ -65,12 +65,28 @@
             <version>0.18.1</version>
         </dependency>
 
+        <!-- https://mvnrepository.com/artifact/ml.dmlc/xgboost4j -->
+        <dependency>
+            <groupId>ml.dmlc</groupId>
+            <artifactId>xgboost4j_2.12</artifactId>
+            <version>1.6.0</version>
+        </dependency>
+
         <!-- https://mvnrepository.com/artifact/ml.dmlc/xgboost4j-spark -->
         <dependency>
             <groupId>ml.dmlc</groupId>
             <artifactId>xgboost4j-spark_2.12</artifactId>
             <version>1.6.0</version>
         </dependency>
+
+
+        <!-- https://mvnrepository.com/artifact/org.mlflow/mlflow-client -->
+        <dependency>
+            <groupId>org.mlflow</groupId>
+            <artifactId>mlflow-client</artifactId>
+            <version>1.11.0</version>
+        </dependency>
+
 
 
         <dependency>

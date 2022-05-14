@@ -28,17 +28,18 @@ import org.apache.spark.ml.classification.NaiveBayes
 
 import scala.collection.mutable
 import com.microsoft.ml.spark.lightgbm.LightGBMClassifier
-import ml.dmlc.xgboost4j.scala.spark.{XGBoostClassificationModel, XGBoostClassifier}
+import ml.dmlc.xgboost4j.scala.spark.{TrackerConf, XGBoostClassificationModel, XGBoostClassifier}
 import org.apache.spark
+import org.mlflow.tracking.MlflowContext
 
 
 object spark1 {
   def main(args: Array[String]): Unit = {
 
-    val sqlContext = SparkSession.builder()
-      .master("local[*]").appName("spark")
-      .config("spark.sql.warehouse.dir", ".")
-      .getOrCreate().sqlContext
+    val sparkConf = new SparkConf().setAppName("SOME APP NAME").setMaster("local[*]")
+      .set("spark.driver.allowMultipleContexts","true")
+    val sparkSession = SparkSession.builder().config(sparkConf).getOrCreate()
+    val sqlContext = sparkSession.sqlContext
 
     import sqlContext.implicits._
 
@@ -51,13 +52,13 @@ object spark1 {
       .option("header",value = true)
       .option("inferSchema","true")
       .format("com.databricks.spark.csv")
-      .load("F:/etude/Master-S2/Ecosysteme_Hadoop/TP/TP7/spark/untitled/train.csv")
+      .load("./src/main/resources/train.csv")
 
     val testDF1 = sqlContext.read
       .option("header","true")
       .option("inferSchema","true")
       .format("com.databricks.spark.csv")
-      .load("F:/etude/Master-S2/Ecosysteme_Hadoop/TP/TP7/spark/untitled/test.csv")
+      .load("./src/main/resources/test.csv")
 
 
     // COMMAND ----------
@@ -170,7 +171,9 @@ object spark1 {
 
     // COMMAND ----------
 
-    display(testEmbarked)
+    testEmbarked.show()
+
+    //display(testEmbarked)
 
     // COMMAND ----------
 
@@ -192,13 +195,19 @@ object spark1 {
 
     // MAGIC %sql SELECT Salutation,percentile_approx(Age, 0.5) AS Median_Age FROM trainEmbarked WHERE Age IS NOT NULL AND Salutation IN ('Miss','Master','Mr','Dr','Mrs') GROUP BY Salutation
 
+
     // COMMAND ----------
 
     // MAGIC %sql SELECT Salutation,count(*) as nullAge FROM testEmbarked WHERE Age IS NULL GROUP BY Salutation
 
+
+
     // COMMAND ----------
 
     // MAGIC %sql SELECT Salutation,percentile_approx(Age, 0.5) AS Median_Age FROM testEmbarked WHERE Age IS NOT NULL AND Salutation IN ('Miss','Master','Mr','Ms','Mrs') GROUP BY Salutation
+
+    //val ageMissingTestData = sqlContext.sql("SELECT Salutation,percentile_approx(Age, 0.5) AS Median_Age FROM testEmbarked WHERE " +
+      //"Age IS NOT NULL AND Salutation IN ('Miss','Master','Mr','Ms','Mrs') GROUP BY Salutation")
 
     // COMMAND ----------
 
@@ -227,9 +236,10 @@ object spark1 {
     val testRemainderDF = sqlContext.sql("SELECT * FROM testEmbarked WHERE Salutation NOT IN ('Mr', 'Miss', 'Master','Ms','Mrs')")
     val testCombinedDF = testRemainderDF.union(testMrDF).union(testMissDF).union(testMasterDF).union(testMsDF).union(testMrsDF)
 
+
     // COMMAND ----------
 
-    display(testCombinedDF)
+    //display(testCombinedDF)
 
     // COMMAND ----------
 
@@ -253,133 +263,233 @@ object spark1 {
     // COMMAND ----------
 
     // Create a vector of the features.
-    val assembler = new VectorAssembler().setInputCols(Array("Pclass","SexVec", "Mil", "Doc", "Rev", "Nob", "Mr", "Mrs", "Miss", "Mstr", "TotalFamSize", "Singleton", "SmallFam", "LargeFam", "Child", "Mother","SibSp", "Parch", "EmbarkVec","Age", "Fare", "FareBucketed")).setOutputCol("features")
+    val assembler = new VectorAssembler().setInputCols(Array("Pclass","SexVec", "Mil", "Doc", "Rev", "Nob", "Mr",
+      "Mrs", "Miss", "Mstr", "TotalFamSize", "Singleton", "SmallFam", "LargeFam",
+      "Child", "Mother","SibSp", "Parch", "EmbarkVec","Age", "Fare", "FareBucketed"))
+      .setOutputCol("features")
 
     // COMMAND ----------
 
     // Create the features pipeline and data frame * SAME AS MACHINE LEARNING PIPELINE
     // The order is important here, Indexers have to come before the encoders
+    val labelIndexer = new StringIndexer()
+      .setInputCol("Survived")
+      .setOutputCol("SurvivedIndexed")
+      .fit(trainCombinedDF)
+
+    val dataIndexLab = labelIndexer.transform(trainCombinedDF)
+    val dataIndexLab1 = labelIndexer.transform(testCombinedDF)
+
     val FeaturesPipeline = (new Pipeline()
       .setStages(Array(genderIndexer,embarkIndexer,genderEncoder,embarkEncoder, fareBucketize, assembler)))
 
-    val trainingFit = FeaturesPipeline.fit(trainCombinedDF)
-    val trainingFeaturesDF = trainingFit.transform(trainCombinedDF)
+    val trainingFit = FeaturesPipeline.fit(dataIndexLab)
+    val trainingFeaturesDF = trainingFit.transform(dataIndexLab).drop("Cabin")
 
-    val testFeaturesDF = trainingFit.transform(testCombinedDF)
+
+    println("hhhhhhhhhhhhhhhhh           " + trainingFeaturesDF.count()+ "       hhhhhhhhhhhhhhhh")
+
+    val testFeaturesDF = trainingFit.transform(dataIndexLab1)
 
     // COMMAND ----------
 
-    display(testFeaturesDF)
+    //display(testFeaturesDF)
 
     // COMMAND ----------
 
     // Now that the data has been prepared, let's split the training dataset into a training and validation dataframe
+
     val Array(trainDF, testDF) = trainingFeaturesDF.randomSplit(Array(0.8, 0.2),seed = 12345)
 
-    // COMMAND ----------
+    println("hhhhhhhhhhhhhhhhhhh           " + trainDF.count()+ "       hhhhhhhhhhhhhhhh")
+    print("----------------")
+    trainDF.show()
+    print("----------------")
+    testDF.show()
+    print("----------------")
 
-    // Create default param map for XGBoost
-    def get_param(): mutable.HashMap[String, Any] = {
-      val params = new mutable.HashMap[String, Any]()
-      params += "eta" -> 0.1
-      params += "max_depth" -> 8
-      params += "gamma" -> 0.0
-      params += "colsample_bylevel" -> 1
-      params += "objective" -> "binary:logistic"
-      params += "num_class" -> 2
-      params += "booster" -> "gbtree"
-      params += "num_rounds" -> 20
-      params += "nWorkers" -> 3
-      return params
-    }
 
-    // COMMAND ----------
-
-    // Create an XGBoost Classifier
-    val xgb = new XGBoostEstimator(get_param().toMap).setLabelCol("Survived").setFeaturesCol("features")
-
-    // COMMAND ----------
-
-    // XGBoost paramater grid
-    val xgbParamGrid = (new ParamGridBuilder()
-      .addGrid(xgb.round, Array(1000))
-      .addGrid(xgb.maxDepth, Array(16))
-      .addGrid(xgb.maxBins, Array(2))
-      .addGrid(xgb.minChildWeight, Array(0.2))
-      .addGrid(xgb.alpha, Array(0.8, 0.9))
-      .addGrid(xgb.lambda, Array(0.9, 1.0))
-      .addGrid(xgb.subSample, Array(0.6, 0.65, 0.7))
-      .addGrid(xgb.eta, Array(0.015))
-      .build())
-
-    // COMMAND ----------
-
-    // Create the XGBoost pipeline
-    val pipeline = new Pipeline().setStages(Array(xgb))
-
-    // COMMAND ----------
-
-    // Setup the binary classifier evaluator
-    val evaluator = (new BinaryClassificationEvaluator()
+    val randomForest = new RandomForestClassifier()
       .setLabelCol("Survived")
-      .setRawPredictionCol("prediction")
-      .setMetricName("areaUnderROC"))
+      .setFeaturesCol("features")
 
-    // COMMAND ----------
+    val labelConverter = new IndexToString()
+      .setInputCol("prediction")
+      .setOutputCol("predictedLabel")
+      .setLabels(labelIndexer.labels)
 
-    // Create the Cross Validation pipeline, using XGBoost as the estimator, the
-    // Binary Classification evaluator, and xgbParamGrid for hyperparameters
-    val cv = (new CrossValidator()
+    val pipeline = new Pipeline().setStages(Array(randomForest,labelConverter))
+
+    val paramGrid = new ParamGridBuilder()
+      .addGrid(randomForest.maxBins, Array(25, 28, 31))
+      .addGrid(randomForest.maxDepth, Array(4, 6, 8))
+      .addGrid(randomForest.impurity, Array("entropy", "gini"))
+      .build()
+
+    val evaluator = new BinaryClassificationEvaluator()
+      .setLabelCol("SurvivedIndexed")
+      .setMetricName("areaUnderPR")
+
+    val cv = new CrossValidator()
       .setEstimator(pipeline)
       .setEvaluator(evaluator)
-      .setEstimatorParamMaps(xgbParamGrid)
-      .setNumFolds(10))
+      .setEstimatorParamMaps(paramGrid)
+      .setNumFolds(10)
 
-    // COMMAND ----------
+    val crossValidatorModel = cv.fit(trainDF)
 
-    // Create the model by fitting the training data
-    val xgbModel = cv.fit(trainDF)
-
-    // COMMAND ----------
-
-    // Print out a copy of the parameters used by XGBoost
-    (xgbModel.bestModel.asInstanceOf[PipelineModel]
-      .stages(0).asInstanceOf[XGBoostClassificationModel]
-      .extractParamMap().toSeq.foreach(println))
-
-    // COMMAND ----------
-
-    evaluator.evaluate(xgbModel.transform(trainDF))
-
-    // COMMAND ----------
-
-    // Test the validation data by scoring the model
-    val results = xgbModel.transform(testDF)
-    evaluator.evaluate(results)
-
-    // COMMAND ----------
-
-    // Test data by scoring the model
-    val scoredDf = xgbModel.transform(testFeaturesDF)
-
-    // COMMAND ----------
-
-    scoredDf.createGlobalTempView("scoredDFS")
-
-    // COMMAND ----------
-
-    display(scoredDf)
+        // Print out a copy of the parameters used by XGBoost
+        (crossValidatorModel.bestModel.asInstanceOf[PipelineModel]
+          .stages(0).asInstanceOf[RandomForestClassificationModel]
+          .extractParamMap().toSeq.foreach(println))
 
 
-    // COMMAND ----------
+        print("traindffffffffffffffffffffffff")
+        println("traindffffffffffffffffffffffff" + evaluator.evaluate(crossValidatorModel.transform(trainDF)).toString)
+
+        // COMMAND ----------
+
+        // Test the validation data by scoring the model
+        val results = crossValidatorModel.transform(testDF)
+
+        print("testttttttttttttttttttt")
+        println( "testttttttttttttttttttt" + evaluator.evaluate(results))
+
+        // COMMAND ----------
+
+        // Test data by scoring the model
+       // val testFeaturesDF = trainingFit.transform(testCombinedDF)
+
+        val scoredDf = crossValidatorModel.transform(testFeaturesDF)
 
     scoredDf
-      .withColumn("Survived", col("Prediction"))
+      .withColumn("Survived", col("predictedLabel"))
       .select("PassengerId", "Survived")
       .coalesce(1)
       .write
-      .format("csv")
+      .format("com.databricks.spark.csv")
       .option("header", "true")
+      .save("./src/main/resources/resultat")
+
+
+//    // COMMAND ----------
+//
+//    // Create default param map for XGBoost
+//    def get_param(): mutable.HashMap[String, Any] = {
+//      val params = new mutable.HashMap[String, Any]()
+//      params += "eta" -> 0.1
+//      params += "max_depth" -> 8
+//      params += "gamma" -> 0.0
+//      params += "colsample_bylevel" -> 1
+//      params += "objective" -> "binary:logistic"
+//      params += "num_class" -> 2
+//      params += "booster" -> "gbtree"
+//      params += "num_rounds" -> 20
+//      params += "nWorkers" -> 3
+//      params += "tracker_conf" -> TrackerConf(0L, "scala")
+//      params += "missing" -> 0.0
+//      //params += "allow_non_zero_for_missing" -> true
+//      return params
+//    }
+//
+//    // COMMAND ----------
+//
+//    // Create an XGBoost Classifier
+//    val xgb = new XGBoostClassifier(get_param().toMap).setLabelCol("SurvivedIndexed").setFeaturesCol("features").setTreeMethod("hist")
+//
+//    print(xgb.explainParams())
+//    // COMMAND ----------
+//
+//    // XGBoost paramater grid
+//    val xgbParamGrid = (new ParamGridBuilder()
+//      .addGrid(xgb.numRound, Array(1000))
+//      .addGrid(xgb.maxDepth, Array(16))
+//      .addGrid(xgb.maxBins, Array(2))
+//      .addGrid(xgb.minChildWeight, Array(0.2))
+//      .addGrid(xgb.alpha, Array(0.8, 0.9))
+//      .addGrid(xgb.lambda, Array(0.9, 1.0))
+//      .addGrid(xgb.subsample, Array(0.6, 0.65, 0.7))
+//      .addGrid(xgb.eta, Array(0.015)
+//      )
+//      .build())
+//
+//     // COMMAND ----------
+//
+//    // Create the XGBoost pipeline
+//
+//    val labelConverter = new IndexToString()
+//      .setInputCol("prediction")
+//      .setOutputCol("predictedLabel")
+//      .setLabels(labelIndexer.labels)
+//
+//    val pipeline = new Pipeline().setStages(Array(xgb,labelConverter))
+//
+//    // COMMAND ----------
+//
+//
+//    // Setup the binary classifier evaluator
+//    val evaluator = (new BinaryClassificationEvaluator()
+//      .setLabelCol("SurvivedIndexed")
+//      .setRawPredictionCol("prediction")
+//      .setMetricName("areaUnderROC")
+//      )
+//
+//    // COMMAND ----------
+//
+//    // Create the Cross Validation pipeline, using XGBoost as the estimator, the
+//    // Binary Classification evaluator, and xgbParamGrid for hyperparameters
+//    val cv = (new CrossValidator()
+//      .setEstimator(pipeline)
+//      .setEvaluator(evaluator)
+//      .setEstimatorParamMaps(xgbParamGrid)
+//      .setNumFolds(10))
+//
+//    // COMMAND ----------
+//
+//    // Create the model by fitting the training data
+//    val xgbModel = cv.fit(trainDF)
+//
+//    // COMMAND ----------
+//
+//    // Print out a copy of the parameters used by XGBoost
+//    (xgbModel.bestModel.asInstanceOf[PipelineModel]
+//      .stages(0).asInstanceOf[XGBoostClassificationModel]
+//      .extractParamMap().toSeq.foreach(println))
+//
+//    // COMMAND ----------
+//
+//    evaluator.evaluate(xgbModel.transform(trainDF))
+//
+//    // COMMAND ----------
+//
+//    // Test the validation data by scoring the model
+//    val results = xgbModel.transform(testDF)
+//    evaluator.evaluate(results)
+//
+//    // COMMAND ----------
+//
+//    // Test data by scoring the model
+//    val testFeaturesDF = trainingFit.transform(testCombinedDF)
+//    val scoredDf = xgbModel.transform(testFeaturesDF)
+//
+//    // COMMAND ----------
+//
+//    scoredDf.createGlobalTempView("scoredDFS")
+//
+//    // COMMAND ----------
+//
+//    //display(scoredDf)
+//
+//
+//    // COMMAND ----------
+//
+//    scoredDf
+//      .withColumn("Survived", col("Prediction"))
+//      .select("PassengerId", "Survived")
+//      .coalesce(1)
+//      .write
+//      .format("csv")
+//      .option("header", "true")
 
 
   }
